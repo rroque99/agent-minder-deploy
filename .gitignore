@@ -1,5 +1,6 @@
-# Local environment — contains registry credentials
+# Local environment — the only file you edit; contains registry credentials
+# and the Elasticsearch password captured in Lab 4.
 .env
 
-# Rendered manifests / scratch output
-*.rendered.yaml
+# Generated: values/*.yaml.tpl rendered from .env at install time
+.rendered/

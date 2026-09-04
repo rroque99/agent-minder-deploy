@@ -35,12 +35,12 @@ helm upgrade --install elastic-operator elastic/eck-operator \
 kubectl rollout status statefulset/elastic-operator -n logging --timeout=5m
 
 step "2/5 Elasticsearch + Kibana"
-kubectl apply -n logging -f "${MANIFESTS_DIR}/elasticsearch.yaml"
+render "${MANIFESTS_DIR}/elasticsearch.yaml.tpl" | kubectl apply -n logging -f -
 info "waiting for Elasticsearch to become ready (this takes a few minutes)"
 kubectl wait --for=jsonpath='{.status.health}'=green \
   elasticsearch/elasticsearch -n logging --timeout=15m || \
   warn "Elasticsearch not green yet - check 'kubectl get pods -n logging' (a Pending pod usually means an unbound PVC)"
-kubectl apply -n logging -f "${MANIFESTS_DIR}/kibana.yaml"
+render "${MANIFESTS_DIR}/kibana.yaml.tpl" | kubectl apply -n logging -f -
 kubectl get pods -n logging
 
 step "3/5 Elasticsearch 'elastic' user password"
@@ -51,16 +51,18 @@ ELASTIC_B64="$(kubectl get secret -n logging elasticsearch-es-elastic-user \
 [[ -n "${ELASTIC_B64}" ]] || die \
   "Cannot read secret logging/elasticsearch-es-elastic-user - is Elasticsearch up? (kubectl get pods -n logging)"
 ELASTIC_PW="$(printf '%s' "${ELASTIC_B64}" | base64 --decode)"
-printf '    elastic password: %s\n' "${ELASTIC_PW}"
-warn "Copy this into values/ssp-infra-override.yaml -> fluent-bit.customConfig HTTP_Passwd (replaces <elastic_password>) before Lab 5."
+[[ -n "${ELASTIC_PW}" ]] || die "Decoded Elasticsearch password is empty"
+# Persist it so Lab 5 renders the Fluent Bit output without anyone copying it.
+set_env ELASTIC_PASSWORD "${ELASTIC_PW}"
+info "Fluent Bit will ship logs to ${ELASTIC_HOST:-elasticsearch-es-http.logging.svc} as user ${ELASTIC_USER:-elastic}"
 
 step "4/5 Prometheus + Grafana (namespace: monitoring)"
 helm repo add bitnami https://charts.bitnami.com/bitnami --force-update
 helm repo update bitnami
 helm upgrade --install prometheus-operator bitnami/kube-prometheus -n monitoring \
-  -f "${VALUES_DIR}/kube-prometheus-values.yaml" --version="${KUBE_PROMETHEUS_VERSION}"
+  -f "$(render_values kube-prometheus-values)" --version="${KUBE_PROMETHEUS_VERSION}"
 helm upgrade --install grafana-operator bitnami/grafana-operator -n monitoring \
-  -f "${VALUES_DIR}/grafana-operator-values.yaml" --version="${GRAFANA_OPERATOR_VERSION}"
+  -f "$(render_values grafana-operator-values)" --version="${GRAFANA_OPERATOR_VERSION}"
 kubectl get pods -n monitoring
 
 step "5/5 Grafana datasource + IDSP dashboard (Grafana.com ID 25306)"

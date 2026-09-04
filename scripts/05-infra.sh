@@ -5,11 +5,14 @@
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl helm
-require_env NAMESPACE RELEASENAME HELM_REPO
+require_env NAMESPACE RELEASENAME HELM_REPO REGISTRY_SECRET_NAME CLICKHOUSE_ENABLED
+# Fluent Bit's output block needs real Elasticsearch credentials. ELASTIC_PASSWORD
+# is written into .env by Lab 4; if you skipped Lab 4, set it yourself.
+require_env ELASTIC_HOST ELASTIC_PORT ELASTIC_USER ELASTIC_PASSWORD
 
 step "helm install infra-${RELEASENAME}"
 helm_deploy "infra-${RELEASENAME}" "${HELM_REPO}/ssp-infra" \
-  "${VALUES_DIR}/ssp-infra-override.yaml" 120m
+  ssp-infra-override 120m
 
 step "Wait for the database to be created (up to 5 minutes)"
 kubectl wait jobs.batch --namespace "${NAMESPACE}" \

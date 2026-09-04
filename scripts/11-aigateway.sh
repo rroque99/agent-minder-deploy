@@ -17,7 +17,9 @@
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl helm
-require_env NAMESPACE RELEASENAME HELM_REPO
+require_env NAMESPACE RELEASENAME HELM_REPO AIGW_GROUP_ID IDSP_BASE_URL \
+            AIGW_FQDN AIGW_SCOPES AIGW_CREDENTIALS_SECRET GATEWAY_CLASS \
+            TLS_SECRET_NAME REGISTRY_SECRET_NAME AIGW_TLS_SELF_SIGNED
 
 secret="${RELEASENAME}-aigateway-credentials"
 if [[ -n "${AIGW_CLIENT_ID:-}" && -n "${AIGW_CLIENT_SECRET:-}" ]]; then
@@ -37,7 +39,7 @@ info "Reference it as aigateway.defaultCredentials.existingSecret: ${secret}"
 
 step "helm install aigw-${RELEASENAME}"
 helm_deploy "aigw-${RELEASENAME}" "${HELM_REPO}/ssp-aigateway" \
-  "${VALUES_DIR}/ssp-aigateway-override.yaml" 120m
+  ssp-aigateway-override 120m
 
 step "Registration and config sync"
 kubectl get pods -n "${NAMESPACE}" | grep aigateway || warn "No aigateway pods yet"

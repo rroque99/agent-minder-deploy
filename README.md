@@ -10,16 +10,20 @@ admin access, and optionally deploy the Sample App / MCP Playground and an
 external AI Gateway. Object configuration (Part B), branding, and SMTP/SMS are
 done in the Admin Console / REST API and are out of scope.
 
-**Method.** All chart configuration lives in per-chart values-override files
-passed with `helm install -f`. Only the release name, `-n <namespace>`, the
-chart reference, and `--timeout` stay on the command line.
+**Method.** `.env` is the only file you edit. Everything in `values/` is a
+template (`*.yaml.tpl`) rendered from `.env` into `.rendered/` at install time
+and passed to Helm with `-f`. Only the release name, `-n <namespace>`, the chart
+reference, and `--timeout` stay on the command line.
 
-> **No env-var expansion in YAML.** `${SSP_FQDN}` and friends are expanded by
-> the shell in `helm` command lines — **not** inside a values file. The files in
-> `values/` carry literal values and `<placeholders>` you edit by hand. The
-> scripts refuse to install a values file that still has unedited placeholders.
-> (The only exception is `manifests/*.yaml.tpl`, which the scripts render with
-> `envsubst`; plain `.yaml` manifests are applied as-is.)
+> **Never edit `values/` or `.rendered/`.** `.rendered/` is regenerated on every
+> run, so edits there are silently discarded. Environment-specific data belongs
+> in `.env`; a template gets it via `${VAR}`.
+
+> **Values discovered mid-deploy are written back to `.env` automatically.** The
+> Elasticsearch password does not exist until Lab 4 creates the cluster, and the
+> `ssp` chart names the Gateway it creates in Lab 6. The script that discovers
+> each one persists it, so later scripts consume it with no manual step. See
+> [Configuration model](#configuration-model).
 
 **AgentMinder = platform + 2 flags.** The install follows the same steps as the
 underlying platform, plus two observability feature flags. No extra packages or
@@ -32,26 +36,27 @@ infrastructure are required.
 ```
 .
 ├── README.md
-├── .env.example                          Lab 1 — environment variables
-├── values/                               chart values-override files
-│   ├── kube-prometheus-values.yaml       enclave monitoring — Prometheus
-│   ├── grafana-operator-values.yaml      enclave monitoring — Grafana
-│   ├── ssp-infra-override.yaml           Lab 5 — database, ClickHouse, Fluent Bit
-│   ├── ssp-override.demo.yaml            Lab 6 — platform (demo / POC)
-│   ├── ssp-override.production.yaml      Lab 6 — platform (production)
-│   ├── ssp-data-override.yaml            Lab 7 — risk data schema + risk/network data
-│   ├── ssp-sample-app-override.yaml      Lab 9 — sample app & MCP Playground
-│   └── ssp-aigateway-override.yaml       Lab 11 — external AI Gateway
-├── manifests/                            kubectl manifests
-│   ├── gatewayclass-eg.yaml              Lab 3
-│   ├── elasticsearch.yaml                Lab 4
-│   ├── kibana.yaml                       Lab 4
-│   ├── grafana-datasource.yaml           Lab 4
-│   ├── grafana-dashboard.yaml            Lab 4 — Grafana.com ID 25306
-│   ├── httproute-kibana.yaml.tpl         Lab 4 — envsubst-rendered
-│   └── httproute-grafana.yaml.tpl        Lab 4 — envsubst-rendered
+├── .env.example              THE ONLY FILE YOU EDIT — copy to .env
+├── .rendered/                generated; templates rendered from .env (gitignored)
+├── values/                   chart values templates, rendered from .env
+│   ├── kube-prometheus-values.yaml.tpl    enclave monitoring — Prometheus
+│   ├── grafana-operator-values.yaml.tpl   enclave monitoring — Grafana
+│   ├── ssp-infra-override.yaml.tpl        Lab 5 — database, ClickHouse, Fluent Bit
+│   ├── ssp-override.demo.yaml.tpl         Lab 6 — platform (demo / POC)
+│   ├── ssp-override.production.yaml.tpl   Lab 6 — platform (production)
+│   ├── ssp-data-override.yaml.tpl         Lab 7 — risk data schema + risk/network data
+│   ├── ssp-sample-app-override.yaml.tpl   Lab 9 — sample app & MCP Playground
+│   └── ssp-aigateway-override.yaml.tpl    Lab 11 — external AI Gateway
+├── manifests/                kubectl manifests (.tpl = rendered from .env)
+│   ├── gatewayclass-eg.yaml               Lab 3
+│   ├── elasticsearch.yaml.tpl             Lab 4 — version/count/storage from .env
+│   ├── kibana.yaml.tpl                    Lab 4
+│   ├── grafana-datasource.yaml            Lab 4
+│   ├── grafana-dashboard.yaml             Lab 4 — Grafana.com ID 25306
+│   ├── httproute-kibana.yaml.tpl          Lab 4
+│   └── httproute-grafana.yaml.tpl         Lab 4
 ├── scripts/
-│   ├── lib/common.sh                     shared helpers, placeholder guard
+│   ├── lib/common.sh                     render, set_env, PSA, discovery helpers
 │   ├── 00-preflight.sh                   prerequisite checks
 │   ├── 02-namespace-and-repo.sh          Lab 2
 │   ├── 03-gateway-api.sh                 Lab 3
@@ -86,7 +91,7 @@ infrastructure are required.
   production uses an external MySQL / PostgreSQL / Oracle reachable from the
   cluster (see [docs/database-connectivity.md](docs/database-connectivity.md)).
 - Access to the AgentMinder Helm chart repository and image registry, including
-  an image pull secret (`ssp-gcr-registry-creds`, created in Lab 2).
+  an image pull secret (`$REGISTRY_SECRET_NAME`, created in Lab 2).
 - A DNS name for the platform FQDN, and — in production — a TLS certificate.
 - *Optional (external AI Gateway):* Admin Console access, to create an AI
   Gateway Group.
@@ -128,28 +133,94 @@ sizing sheet on the "Sizing the Deployment" docs page.
 ## Quick start
 
 ```bash
-# Lab 1 — environment
 cp .env.example .env
-$EDITOR .env                     # PREFIX, DOMAIN, registry credentials
+$EDITOR .env                     # the only file you edit
 
-# edit the values files: replace every <placeholder>, and set
-# ssp.ingress.host to your SSP_FQDN
-$EDITOR values/ssp-override.demo.yaml
-
-./scripts/00-preflight.sh        # verify prerequisites
-./scripts/deploy-all.sh          # Labs 2–8 + 10
+./scripts/00-preflight.sh        # verify prerequisites + render templates
+./scripts/deploy-all.sh          # Labs 2–8 + 10, end to end
 ```
 
-`deploy-all.sh` stops between Lab 4 and Lab 5 so you can paste the Elasticsearch
-password it printed into the Fluent Bit block of
-`values/ssp-infra-override.yaml`; re-run it to continue. Every script uses
-`helm upgrade --install`, so re-running is safe.
+For a demo deployment you set **three things** in `.env`: `DOMAIN`, and your
+Broadcom `BROADCOM_REGISTRY_USERNAME` / `BROADCOM_REGISTRY_TOKEN`. Everything
+else has a working default, and `SSP_FQDN` is derived from `PREFIX` + `DOMAIN`.
+
+`00-preflight.sh` validates `.env` for the selected profile, reports which
+variables are filled in later by which lab, and renders every template the
+profile uses — so an unresolved variable surfaces before any install starts.
+
+`deploy-all.sh` runs the core path without stopping: Lab 4 captures the
+Elasticsearch password into `.env` itself, so Lab 5 renders Fluent Bit with no
+manual step. Every script uses `helm upgrade --install`, so re-running is safe
+and always reflects the current `.env`.
 
 Skips: `SKIP_GATEWAY=1` (a Gateway API controller already runs),
 `SKIP_ENCLAVE=1` (you link IDSP to an existing observability stack).
 
-To deploy production instead of demo, set `SSP_PROFILE=production` in `.env` and
-fill in `values/ssp-override.production.yaml`.
+To deploy production instead of demo, set `SSP_PROFILE=production` in `.env`,
+along with the variables under its "Production only" heading.
+
+---
+
+## Configuration model
+
+`.env` in, rendered YAML out. Nothing else is hand-maintained.
+
+```
+.env  ──►  values/*.yaml.tpl  ──envsubst──►  .rendered/*.yaml  ──►  helm -f
+  ▲
+  └── set_env: scripts write back what they discover
+```
+
+**Three kinds of value live in `.env`:**
+
+| Kind | Examples | You set it? |
+| --- | --- | --- |
+| Environment facts | `DOMAIN`, registry credentials, `DB_HOST` | Yes — before you start |
+| Tunables with defaults | `PSA_LEVEL`, `SSP_DEPLOYMENT_SIZE`, `ES_STORAGE`, feature flags | Only to change behavior |
+| Discovered | `ELASTIC_PASSWORD`, `GATEWAY_NAME`, `GATEWAY_NAMESPACE`, `GRAFANA_SERVICE` | No — a script writes it back |
+
+Several values are derived, so you set the input once: `SSP_FQDN` from `PREFIX` +
+`DOMAIN`, `SAMPLE_APP_FQDN` and `AIGW_FQDN` from `DOMAIN`, and `DB_JDBC_URL` from
+`DB_TYPE` / `DB_HOST` / `DB_PORT` / `DB_SCHEMA`.
+
+### Write-back
+
+`set_env VAR VALUE` rewrites the matching line in `.env` in place (appending if
+absent) and exports it for the current run. It is idempotent — re-running a
+script updates the line rather than adding another — and it `chmod 600`s `.env`,
+which holds the Elasticsearch password once Lab 4 has run.
+
+| Variable | Discovered by | Why it cannot be set up front |
+| --- | --- | --- |
+| `ELASTIC_PASSWORD` | Lab 4 | ECK generates it when Elasticsearch starts |
+| `GATEWAY_NAME`, `GATEWAY_NAMESPACE` | Lab 4b | the `ssp` chart names the Gateway it creates in Lab 6 |
+| `GRAFANA_SERVICE` | Lab 4b | depends on the Grafana operator's release name |
+
+Set any of these yourself to pin them — a non-empty value is used as-is and
+never overwritten by discovery. That is the path for using your own
+Elasticsearch (`ELASTIC_HOST` / `ELASTIC_USER` / `ELASTIC_PASSWORD`) or a shared
+edge Gateway.
+
+### Rendering rules
+
+- Templates are rendered with an **explicit** variable list (`ENVSUBST_VARS` in
+  `scripts/lib/common.sh`). Unlisted `${...}` tokens are left untouched — which
+  is what keeps Fluent Bit's `Index ${tag}-%Y.%m.%d` intact. A bare `envsubst`
+  would blank it and silently break log indexing.
+- After each render, unresolved `${VAR}` tokens and leftover `<placeholder>`
+  markers are hard errors pointing back at `.env`.
+- An *unset* variable renders to an empty string rather than staying `${VAR}`,
+  so it is not caught by that check. Each script therefore declares what it
+  needs with `require_env`, which is the authoritative gate. Adding a `${VAR}`
+  to a template means adding it to `ENVSUBST_VARS` **and** to the consuming
+  script's `require_env`.
+
+### Adding a new setting
+
+1. Add `export MY_VAR="default"` to `.env.example` under the right lab heading.
+2. Add `${MY_VAR}` to `ENVSUBST_VARS` in `scripts/lib/common.sh`.
+3. Reference `${MY_VAR}` in the relevant `values/*.yaml.tpl`.
+4. Add it to `require_env` in the script that installs that chart.
 
 ---
 
@@ -297,9 +368,11 @@ run an enterprise observability stack, you may link IDSP to it instead.
 The script creates and [PSA-labels](#pod-security-admission) the `logging` and
 `monitoring` namespaces up front, then deploys into them.
 
-The script prints the Elasticsearch `elastic` user password. **Paste it into
-`values/ssp-infra-override.yaml`** (`fluent-bit.customConfig` →
-`HTTP_Passwd`, replacing `<elastic_password>`) before Lab 5.
+The script reads the Elasticsearch `elastic` user password and writes it to
+`.env` as `ELASTIC_PASSWORD`, so Lab 5 renders the Fluent Bit output block with
+no manual step. Using your own Elasticsearch instead? Set `ELASTIC_HOST`,
+`ELASTIC_PORT`, `ELASTIC_USER`, and `ELASTIC_PASSWORD` in `.env` and the
+discovery is skipped.
 
 `04b-enclave-routes.sh` attaches the `kibana.<DOMAIN>` and `grafana.<DOMAIN>`
 HTTPRoutes to your Gateway listener. In demo mode the `ssp` chart creates the
@@ -370,7 +443,7 @@ the DB pod logs. External database → make sure the bundled DB is disabled and
 ./scripts/06-platform.sh
 ```
 
-Installs the core platform with `values/ssp-override.${SSP_PROFILE}.yaml`. Demo
+Installs the core platform from `values/ssp-override.${SSP_PROFILE}.yaml.tpl`. Demo
 and production differ only by which file is used. Release: `${RELEASENAME}`.
 
 > **Gateway-as-a-Service:** the in-platform (embedded) AI Gateway is enabled by
@@ -557,37 +630,43 @@ namespace no longer exists.
 
 | Chart | Release name | Override file |
 | --- | --- | --- |
-| `ssp-infra` | `infra-${RELEASENAME}` | `values/ssp-infra-override.yaml` |
-| `ssp` | `${RELEASENAME}` | `values/ssp-override.demo.yaml` \| `values/ssp-override.production.yaml` |
-| `ssp-data` | `data-${RELEASENAME}` | `values/ssp-data-override.yaml` |
-| `ssp-sample-app` (opt) | `sample-${RELEASENAME}` | `values/ssp-sample-app-override.yaml` |
-| `ssp-aigateway` (opt) | `aigw-${RELEASENAME}` | `values/ssp-aigateway-override.yaml` |
+| `ssp-infra` | `infra-${RELEASENAME}` | `ssp-infra-override.yaml.tpl` |
+| `ssp` | `${RELEASENAME}` | `ssp-override.demo.yaml.tpl` \| `ssp-override.production.yaml.tpl` |
+| `ssp-data` | `data-${RELEASENAME}` | `ssp-data-override.yaml.tpl` |
+| `ssp-sample-app` (opt) | `sample-${RELEASENAME}` | `ssp-sample-app-override.yaml.tpl` |
+| `ssp-aigateway` (opt) | `aigw-${RELEASENAME}` | `ssp-aigateway-override.yaml.tpl` |
 
 ---
 
 ## Transcription notes
 
-- **`ssp-infra-override.yaml`** — the sample in the .docx lost a line break: a
+- **`ssp-infra-override.yaml.tpl`** — the sample in the .docx lost a line break: a
   stray `global:` ran onto the end of the `clickhouse.enabled` comment line, and
   the Fluent Bit `global:` key sat at column 0 while its sibling `customConfig:`
-  sat at two spaces, which is not valid YAML. `values/ssp-infra-override.yaml`
+  sat at two spaces, which is not valid YAML. The template
   carries the corrected structure (top-level `global.registry` for the shared
   pull secret, and `fluent-bit.global` + `fluent-bit.customConfig` nested under
   `fluent-bit`). Verify it against the current `ssp-infra` chart values
   reference before a production install.
-- **`ssp-override.yaml` (demo)** — the guide shows
+- **`ssp-override.demo.yaml.tpl`** — the guide shows
   `gatewayClassName: <your-gatewayclass>`; this repo sets `eg` to match the
   GatewayClass created in Lab 3.
 - **Enclave HTTPRoutes** — the guide's `<your-gateway>` / `<gateway-namespace>`
   / `<grafana-service>` placeholders became `.yaml.tpl` templates rendered by
   `envsubst`, since these are `kubectl` manifests rather than Helm values files.
-  All three values are [discovered from the cluster](#lab-4--enclave-services-observability--monitoring)
+  All three values are discovered from the cluster and written back to `.env`
   rather than hand-edited: the `ssp` chart names the Gateway it creates, so the
   guide's placeholder had no answer a reader could fill in ahead of time.
 - **Lab 4 → Lab 5 ordering** — the guide applies the enclave HTTPRoutes inside
   Lab 4, but in demo mode the Gateway they attach to is created by the `ssp`
   chart in Lab 6. That step is split into `scripts/04b-enclave-routes.sh` so it
   can run after a Gateway exists.
+- **Values files are templates, not hand-edited copies.** The guide says to
+  "copy the sample YAML below into real files and edit the placeholders," and
+  warns that `${SSP_FQDN}` is not expanded inside a values file. That warning is
+  about Helm's behavior, not a bar on generating the file — so `values/` holds
+  `*.yaml.tpl` rendered from `.env`, and `.env` is the only thing edited. The
+  rendered output is what the guide describes; only the authoring step differs.
 - The scripts use `helm upgrade --install` rather than `helm install`, so a
   re-run after a fix is idempotent.
 

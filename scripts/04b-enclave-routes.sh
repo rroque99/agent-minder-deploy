@@ -64,18 +64,27 @@ else
     die "Ambiguous - set GATEWAY_NAME (and GATEWAY_NAMESPACE) in .env to pick one."
   fi
 
-  GATEWAY_NAMESPACE="$(printf '%s\n' "${found}" | awk '{print $1}')"
-  GATEWAY_NAME="$(printf '%s\n' "${found}" | awk '{print $2}')"
-  ok "GATEWAY_NAME=${GATEWAY_NAME}  GATEWAY_NAMESPACE=${GATEWAY_NAMESPACE}  (class $(printf '%s\n' "${found}" | awk '{print $3}'))"
+  gw_ns="$(printf '%s\n' "${found}" | awk '{print $1}')"
+  gw_nm="$(printf '%s\n' "${found}" | awk '{print $2}')"
+  gw_class="$(printf '%s\n' "${found}" | awk '{print $3}')"
+  info "found ${gw_ns}/${gw_nm} (class ${gw_class})"
+  # Persist so later runs and other scripts reuse it without re-discovering.
+  set_env GATEWAY_NAMESPACE "${gw_ns}"
+  set_env GATEWAY_NAME      "${gw_nm}"
 fi
 export GATEWAY_NAME GATEWAY_NAMESPACE
 
-step "Discover the Grafana service"
-GRAFANA_SERVICE="${GRAFANA_SERVICE:-$(kubectl get svc -n monitoring -o name \
-  | grep -i grafana | grep -v operator-metrics | head -1 | cut -d/ -f2)}"
-[[ -n "${GRAFANA_SERVICE}" ]] || die "No Grafana service found in 'monitoring'. Set GRAFANA_SERVICE explicitly."
+step "Grafana service"
+if [[ -n "${GRAFANA_SERVICE:-}" ]]; then
+  info "GRAFANA_SERVICE=${GRAFANA_SERVICE} (from .env)"
+else
+  discovered="$(kubectl get svc -n monitoring -o name 2>/dev/null \
+    | grep -i grafana | grep -v operator-metrics | head -1 | cut -d/ -f2 || true)"
+  [[ -n "${discovered}" ]] || \
+    die "No Grafana service found in 'monitoring'. Set GRAFANA_SERVICE in .env."
+  set_env GRAFANA_SERVICE "${discovered}"
+fi
 export GRAFANA_SERVICE
-ok "GRAFANA_SERVICE=${GRAFANA_SERVICE}"
 
 step "Apply HTTPRoutes"
 render "${MANIFESTS_DIR}/httproute-kibana.yaml.tpl"  | kubectl apply -f -

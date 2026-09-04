@@ -9,6 +9,28 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 VALUES_DIR="${ROOT_DIR}/values"
 MANIFESTS_DIR="${ROOT_DIR}/manifests"
+RENDERED_DIR="${ROOT_DIR}/.rendered"
+ENV_FILE="${ROOT_DIR}/.env"
+
+# Every variable the templates may reference. envsubst is given this list
+# explicitly so that unrelated ${...} tokens survive rendering - Fluent Bit's
+# `Index ${tag}-%Y.%m.%d` is a Fluent Bit variable, not one of ours, and a bare
+# `envsubst` would silently blank it.
+ENVSUBST_VARS='
+${NAMESPACE} ${RELEASENAME} ${SSP_FQDN} ${DOMAIN} ${PREFIX}
+${REGISTRY_SECRET_NAME} ${IMAGE_REPOSITORY_BASE}
+${GATEWAY_CLASS} ${GATEWAY_NAME} ${GATEWAY_NAMESPACE} ${EXISTING_GATEWAY}
+${TLS_SECRET_NAME} ${MTLS_ENABLED}
+${SSP_DEPLOYMENT_SIZE} ${OBSERVE_ENABLED} ${AIGATEWAY_ENABLED} ${NATS_ENABLED}
+${CLICKHOUSE_ENABLED} ${OTEL_ACCEPT_EXTERNAL}
+${ELASTIC_HOST} ${ELASTIC_PORT} ${ELASTIC_USER} ${ELASTIC_PASSWORD}
+${DB_TYPE} ${DB_HOST} ${DB_PORT} ${DB_SCHEMA} ${DB_USER} ${DB_SECRET}
+${DB_SSL_MODE} ${DB_JDBC_URL} ${USE_IMAGE_DIGEST}
+${SAMPLE_APP_FQDN} ${GCP_PROJECT_ID} ${GCP_REGION} ${GCP_SA_KEY_SECRET}
+${AIGW_FQDN} ${AIGW_GROUP_ID} ${AIGW_SCOPES} ${IDSP_BASE_URL}
+${AIGW_CREDENTIALS_SECRET} ${AIGW_TLS_SELF_SIGNED}
+${ES_VERSION} ${ES_NODE_COUNT} ${ES_STORAGE} ${GRAFANA_SERVICE}
+'
 
 # --- output ------------------------------------------------------------------
 if [[ -t 1 ]]; then
@@ -38,7 +60,87 @@ require_env() {
   for v in "$@"; do
     [[ -n "${!v:-}" ]] || missing+=("$v")
   done
-  (( ${#missing[@]} == 0 )) || die "Unset required variable(s): ${missing[*]}"
+  (( ${#missing[@]} == 0 )) || \
+    die "Unset in .env: ${missing[*]}  - set them in ${ENV_FILE#"${ROOT_DIR}"/} and re-run."
+}
+
+# set_env VAR VALUE
+#
+# Persist a value discovered at runtime into .env, then export it, so later
+# scripts pick it up without anyone hand-editing a file. Used for values that
+# cannot exist before a step runs: the Elasticsearch password (Lab 4) and the
+# Gateway the ssp chart creates (Lab 6).
+#
+# Rewrites via a temp file rather than `sed -i`, whose syntax differs between
+# GNU and BSD.
+set_env() {
+  local var="$1" val="$2" tmp
+  [[ -n "$var" ]] || die "set_env: missing variable name"
+
+  export "${var}=${val}"
+
+  if [[ ! -f "${ENV_FILE}" ]]; then
+    warn "No .env to update - ${var} is exported for this run only."
+    return 0
+  fi
+
+  tmp="$(mktemp "${TMPDIR:-/tmp}/env.XXXXXX")" || die "set_env: mktemp failed"
+  # Preserve the file's own permissions; .env holds secrets.
+  awk -v v="$var" -v val="$val" '
+    BEGIN { done = 0 }
+    # match `export VAR=...` or `VAR=...`, commented-out or not
+    $0 ~ "^[[:space:]]*#?[[:space:]]*(export[[:space:]]+)?" v "=" {
+      if (!done) { print "export " v "=\"" val "\""; done = 1 }
+      next
+    }
+    { print }
+    END { if (!done) { print ""; print "# added by set_env"; print "export " v "=\"" val "\"" } }
+  ' "${ENV_FILE}" > "$tmp" || { rm -f "$tmp"; die "set_env: failed to rewrite .env"; }
+
+  cat "$tmp" > "${ENV_FILE}" && rm -f "$tmp"
+  chmod 600 "${ENV_FILE}" 2>/dev/null || true
+  ok "${var} saved to .env"
+}
+
+# render_values <basename>   values/<basename>.yaml.tpl -> .rendered/<basename>.yaml
+# Echoes the rendered path.
+render_values() {
+  local name="$1"
+  local tpl="${VALUES_DIR}/${name}.yaml.tpl"
+  local out="${RENDERED_DIR}/${name}.yaml"
+  [[ -f "$tpl" ]] || die "Template not found: ${tpl}"
+  mkdir -p "${RENDERED_DIR}"
+  envsubst "${ENVSUBST_VARS}" < "$tpl" > "$out"
+  validate_rendered "$out" "$name"
+  printf '%s' "$out"
+}
+
+# Catch anything the render left unresolved, and point at .env rather than at
+# the generated file - editing the rendered copy would be overwritten silently.
+validate_rendered() {
+  local out="$1" name="$2" unresolved placeholders
+  # Note: an unset variable renders to an empty string rather than being left
+  # as ${VAR}, so it is NOT caught here. Each script guards the variables it
+  # actually needs with require_env - that is the authoritative check.
+  # Tokens that are deliberately NOT ours and must survive rendering. Filtered
+  # with grep -vF: in a BSD grep BRE, the '$' in '${tag}' is read as an anchor,
+  # so a plain `grep -v '${tag}'` matches nothing and the exclusion silently
+  # fails on macOS while working on GNU grep.
+  unresolved="$(grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$out" \
+    | grep -vF '${tag}' || true)"
+  placeholders="$(grep -nE '^[^#]*<[A-Za-z0-9_.-]+>' "$out" || true)"
+
+  if [[ -n "$unresolved" ]]; then
+    warn "${name}: variables left unresolved after render:"
+    printf '%s\n' "$unresolved" | sed 's/^/       /' >&2
+    die "Add them to .env (they are not in ENVSUBST_VARS, or are unset)."
+  fi
+  if [[ -n "$placeholders" ]]; then
+    warn "${name}: <placeholder> still present after render:"
+    printf '%s\n' "$placeholders" | sed 's/^/       /' >&2
+    die "This is a template bug - the value should come from .env."
+  fi
+  return 0
 }
 
 require_cmd() {
@@ -116,26 +218,6 @@ ensure_namespace() {
     warn "PSA level '${level}' on ${ns} is stricter than privileged - pods may be rejected."
 }
 
-# --- placeholder guard -------------------------------------------------------
-# The guide is explicit: shell variables are NOT expanded inside values files.
-# So every <placeholder> must be edited by hand before install. Catch the ones
-# that were missed instead of letting Helm render a broken release.
-check_placeholders() {
-  local f="$1" hits
-  [[ -f "$f" ]] || die "Values file not found: $f"
-  # Ignore comment-only lines; flag <...> markers in actual values.
-  hits="$(grep -nE '^[^#]*<[A-Za-z0-9_.-]+>' "$f" || true)"
-  if [[ -n "$hits" ]]; then
-    warn "Unedited placeholders in $(basename "$f"):"
-    printf '%s\n' "$hits" | sed 's/^/       /' >&2
-    if [[ "${SKIP_PLACEHOLDER_CHECK:-}" == "1" ]]; then
-      warn "SKIP_PLACEHOLDER_CHECK=1 -- continuing anyway."
-    else
-      die "Edit the file, or re-run with SKIP_PLACEHOLDER_CHECK=1 to override."
-    fi
-  fi
-}
-
 # --- helm --------------------------------------------------------------------
 # Adds --version only when AGENTMINDER_CHART_VERSION is set.
 chart_version_args() {
@@ -144,10 +226,14 @@ chart_version_args() {
   fi
 }
 
-# Install or upgrade, so re-running a script is safe.
+# helm_deploy <release> <chart> <values-basename> [timeout]
+#
+# Renders values/<basename>.yaml.tpl from .env, then installs or upgrades - so
+# re-running any script is safe and always reflects the current .env.
 helm_deploy() {
-  local release="$1" chart="$2" valuesfile="$3" timeout="${4:-120m}"
-  check_placeholders "$valuesfile"
+  local release="$1" chart="$2" name="$3" timeout="${4:-120m}"
+  local valuesfile; valuesfile="$(render_values "$name")"
+  info "rendered ${name}.yaml.tpl -> ${valuesfile#"${ROOT_DIR}"/}"
   local -a args=(upgrade --install "$release" "$chart"
                  -n "$NAMESPACE" -f "$valuesfile" "--timeout=${timeout}")
   local vflag; vflag="$(chart_version_args)"
@@ -156,8 +242,9 @@ helm_deploy() {
   helm "${args[@]}"
 }
 
-render() { # render <template> -> stdout
+# render <template> -> stdout   (for manifests/*.yaml.tpl)
+render() {
   local tpl="$1"
   [[ -f "$tpl" ]] || die "Template not found: $tpl"
-  envsubst < "$tpl"
+  envsubst "${ENVSUBST_VARS}" < "$tpl"
 }

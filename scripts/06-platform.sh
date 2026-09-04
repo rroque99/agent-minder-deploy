@@ -9,21 +9,21 @@
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl helm
-require_env NAMESPACE RELEASENAME HELM_REPO
+require_env NAMESPACE RELEASENAME HELM_REPO SSP_FQDN REGISTRY_SECRET_NAME \
+            GATEWAY_CLASS SSP_DEPLOYMENT_SIZE OBSERVE_ENABLED NATS_ENABLED \
+            AIGATEWAY_ENABLED OTEL_ACCEPT_EXTERNAL
 
 PROFILE="${SSP_PROFILE:-demo}"
-VF="${VALUES_DIR}/ssp-override.${PROFILE}.yaml"
-[[ -f "$VF" ]] || die "Unknown SSP_PROFILE='${PROFILE}' (expected demo or production)"
+TPL="ssp-override.${PROFILE}"
+[[ -f "${VALUES_DIR}/${TPL}.yaml.tpl" ]] || \
+  die "Unknown SSP_PROFILE='${PROFILE}' (expected demo or production)"
 
 step "Profile: ${PROFILE}"
-info "values file: ${VF}"
-if ! grep -q "host: ${SSP_FQDN}" "$VF"; then
-  warn "ssp.ingress.host in ${PROFILE} override does not match SSP_FQDN=${SSP_FQDN}."
-  warn "Env vars are not expanded inside values files -- edit the literal host."
-fi
+info "template: values/${TPL}.yaml.tpl"
+info "ingress host: ${SSP_FQDN}  (from .env)"
 
 step "helm install ${RELEASENAME}"
-helm_deploy "${RELEASENAME}" "${HELM_REPO}/ssp" "$VF" 120m
+helm_deploy "${RELEASENAME}" "${HELM_REPO}/ssp" "${TPL}" 120m
 
 step "Success criteria"
 helm status "${RELEASENAME}" -n "${NAMESPACE}" | head -5

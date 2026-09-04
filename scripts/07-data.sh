@@ -9,11 +9,11 @@
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl helm
-require_env NAMESPACE RELEASENAME HELM_REPO
+require_env NAMESPACE RELEASENAME HELM_REPO REGISTRY_SECRET_NAME
 
 step "helm install data-${RELEASENAME}"
 helm_deploy "data-${RELEASENAME}" "${HELM_REPO}/ssp-data" \
-  "${VALUES_DIR}/ssp-data-override.yaml" 60m
+  ssp-data-override 60m
 
 step "Success criteria"
 kubectl get jobs -n "${NAMESPACE}" | grep -i data || \

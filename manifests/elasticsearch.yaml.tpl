@@ -5,10 +5,10 @@ metadata:
   name: elasticsearch
   namespace: logging
 spec:
-  version: 9.2.1
+  version: ${ES_VERSION}
   nodeSets:
   - name: default
-    count: 1                       # demo: 1  |  production: 3
+    count: ${ES_NODE_COUNT}          # demo: 1  |  production: 3
     config:
       node.roles: [ master, data ]
       node.store.allow_mmap: false
@@ -26,5 +26,5 @@ spec:
         accessModes: [ ReadWriteOnce ]
         resources:
           requests:
-            storage: 20Gi          # size to retention, e.g. 1 GB/day x 90 = 90Gi
+            storage: ${ES_STORAGE}
   volumeClaimDeletePolicy: DeleteOnScaledownOnly

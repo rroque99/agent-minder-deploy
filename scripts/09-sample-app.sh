@@ -15,7 +15,8 @@
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl helm
-require_env NAMESPACE RELEASENAME HELM_REPO
+require_env NAMESPACE RELEASENAME HELM_REPO SAMPLE_APP_FQDN GATEWAY_CLASS \
+            REGISTRY_SECRET_NAME TLS_SECRET_NAME GCP_PROJECT_ID GCP_REGION
 
 if [[ -n "${GCP_SA_KEY_FILE:-}" ]]; then
   require_env GCP_SA_KEY_SECRET
@@ -32,7 +33,7 @@ fi
 
 step "helm install sample-${RELEASENAME}"
 helm_deploy "sample-${RELEASENAME}" "${HELM_REPO}/ssp-sample-app" \
-  "${VALUES_DIR}/ssp-sample-app-override.yaml" 120m
+  ssp-sample-app-override 120m
 
 step "Success criteria"
 kubectl get pods -n "${NAMESPACE}" | grep -E "sample|mcp|playground" || \

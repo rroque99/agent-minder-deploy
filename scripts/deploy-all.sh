@@ -24,20 +24,17 @@ run 02-namespace-and-repo.sh
 [[ "${SKIP_GATEWAY:-}" == "1" ]] || run 03-gateway-api.sh
 [[ "${SKIP_ENCLAVE:-}" == "1" ]] || run 04-enclave-services.sh
 
-# Fluent Bit needs Elasticsearch credentials before Lab 5 can install. Lab 4
-# prints them; with SKIP_ENCLAVE=1 they come from your own Elasticsearch.
-if grep -q '<elastic_password>' "${VALUES_DIR}/ssp-infra-override.yaml"; then
-  warn "values/ssp-infra-override.yaml still contains <elastic_password>."
+# Lab 4 writes ELASTIC_PASSWORD into .env itself, so no manual step is needed.
+# Re-read it here in case a sub-script updated the file after we sourced it.
+load_env
+if [[ -z "${ELASTIC_PASSWORD:-}" ]]; then
+  warn "ELASTIC_PASSWORD is empty - Fluent Bit cannot ship logs without it."
   if [[ "${SKIP_ENCLAVE:-}" == "1" ]]; then
-    warn "Put your existing Elasticsearch credentials in the fluent-bit"
-    warn "customConfig block (HTTP_User / HTTP_Passwd, and the Host line),"
-    warn "then re-run this script."
-  else
-    warn "Paste the Elasticsearch password printed above into the fluent-bit"
-    warn "customConfig HTTP_Passwd field, then re-run this script."
+    die "With SKIP_ENCLAVE=1, set ELASTIC_PASSWORD (and ELASTIC_HOST/ELASTIC_USER) in .env for your own Elasticsearch."
   fi
-  die  "Stopping before Lab 5."
+  die "Lab 4 should have set it. Re-run scripts/04-enclave-services.sh."
 fi
+ok "ELASTIC_PASSWORD present (captured by Lab 4)"
 
 run 05-infra.sh
 run 06-platform.sh

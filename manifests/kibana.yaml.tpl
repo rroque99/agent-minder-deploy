@@ -5,7 +5,7 @@ metadata:
   name: kibana
   namespace: logging
 spec:
-  version: 9.2.1
+  version: ${ES_VERSION}
   count: 1
   elasticsearchRef:
     name: elasticsearch
