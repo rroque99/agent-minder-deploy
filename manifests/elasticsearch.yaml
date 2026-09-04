@@ -1,0 +1,30 @@
+# Lab 4 - Elasticsearch (ECK) for platform log storage.
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: elasticsearch
+  namespace: logging
+spec:
+  version: 9.2.1
+  nodeSets:
+  - name: default
+    count: 1                       # demo: 1  |  production: 3
+    config:
+      node.roles: [ master, data ]
+      node.store.allow_mmap: false
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests: { memory: 4Gi, cpu: 1 }
+            limits:   { memory: 4Gi, cpu: 1 }
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes: [ ReadWriteOnce ]
+        resources:
+          requests:
+            storage: 20Gi          # size to retention, e.g. 1 GB/day x 90 = 90Gi
+  volumeClaimDeletePolicy: DeleteOnScaledownOnly

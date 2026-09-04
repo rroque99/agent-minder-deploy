@@ -1,0 +1,45 @@
+# ssp-override.yaml  (demo / POC)
+# Chart: ${HELM_REPO}/ssp     Release: ${RELEASENAME}     Lab 6
+#
+# No env-var expansion happens inside this file - edit the literal values below.
+ssp:
+  deployment:
+    size: demo                   # 60 auth/min, single replica
+  ingress:
+    host: myiam.example.com      # <-- your SSP_FQDN
+    type: gatewayapi             # Kubernetes Gateway API (edge routing)
+    gatewayApi:
+      createGateway: true        # let the chart create the Gateway
+      gatewayClassName: eg       # <-- the GatewayClass from Lab 3
+      skipWildcardListener: true
+  featureFlags:
+    aigateway:
+      enabled: true              # central (in-platform) AI Gateway
+    nats:
+      enabled: true              # NATS JetStream - required for observability
+global:
+  image:
+    pullSecretNames:
+    - ssp-gcr-registry-creds     # fetch images via the pull secret from Lab 2
+  observe:
+    enabled: true                # activates the AgentMinder observability pipeline
+  otelAcceptExternalRequests:
+    enabled: true                # accept external OTLP (e.g. an external AI Gateway)
+opentelemetry-collector:
+  imagePullSecrets:
+    - name: ssp-gcr-registry-creds
+nats:
+  config:
+    cluster:
+      enabled: false             # multi-node cluster disabled
+      replicas: 1                # single nats pod for demo
+  global:
+    image:
+      pullSecretNames:
+      - ssp-gcr-registry-creds   # pull secret from Broadcom registry
+hazelcast-enterprise:
+  cluster:
+    memberCount: 1               # single Hazelcast member for demo
+  image:
+    imagePullSecrets:
+    - name: ssp-gcr-registry-creds

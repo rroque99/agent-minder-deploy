@@ -1,0 +1,39 @@
+# ssp-aigateway-override.yaml  (optional - external / standalone AI Gateway)
+# Chart: ${HELM_REPO}/ssp-aigateway   Release: aigw-${RELEASENAME}   Lab 11
+#
+# Only needed for a gateway at the edge or in another cluster. The in-platform
+# AI Gateway is enabled by ssp.featureFlags.aigateway.enabled in Lab 6.
+aigateway:
+  name: aigateway
+  groupId: "<gateway-group-uuid>"    # Admin Console -> AI Gateways -> Gateway Group GUID
+  # idspBaseUrl derives control-plane, auth, PDP, OTLP and token endpoints
+  idspBaseUrl: "https://idsp.example.com/<tenant>"
+  defaultCredentials:
+    existingSecret: "<release-name>-aigateway-credentials"
+    scopes:
+      - "urn:iam:myscopes"
+  otel:
+    enabled: true                    # activates the OpenTelemetry pipeline
+imagePullSecrets:
+  - name: ssp-gcr-registry-creds     # private repo reference pull secret from Lab 2
+
+tls:
+  generateSelfSignedCert: true       # dev/test only; production: tls.existingSecret
+ingress:
+  enabled: false                     # disable legacy ingress for Gateway API
+gatewayApi:
+  enabled: true                      # activate Kubernetes Gateway API support
+  httpRoute:
+    enabled: true                    # chart-managed HTTPRoute resource
+    rules:
+      - hostname: "aigateway.example.com"
+        port: 443                    # standard TLS listener port
+        matches:
+          - path:
+              type: PathPrefix
+              value: /
+  gateway:
+    create: true                     # let the chart provision the Gateway
+    gatewayClassName: "eg"           # Envoy Gateway class from Lab 3
+    tls:
+      existingSecretName: "ssp-general-tls"  # production: signed TLS secret

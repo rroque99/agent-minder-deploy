@@ -1,0 +1,29 @@
+# ssp-sample-app-override.yaml  (optional - Sample App & MCP Playground)
+# Chart: ${HELM_REPO}/ssp-sample-app   Release: sample-${RELEASENAME}   Lab 9
+sspReleaseName: ssp
+featureFlags:
+  sampleApp: { enabled: true }   # sample web application
+  sampleMCP: { enabled: true }   # sample MCP server + MCP Playground
+  sampleRP:  { enabled: true }   # sample resource provider
+  sampleSPI: { enabled: true }   # sample SPI (SMS/email test wiring)
+ingress:
+  type: gatewayapi
+  host: sampleapp-myiam.example.com
+  gatewayApi:
+    gatewayType: auto
+    createGateway: true          # let the chart create the Gateway
+    gatewayClassName: eg         # created in Lab 3
+    skipWildcardListener: true
+  tls:
+    secretName: ssp-general-tls  # for production with a signed TLS secret
+global:
+  registry:
+    existingSecrets:
+    - name: ssp-gcr-registry-creds
+
+# MCP Playground - creates agents via GCP Vertex AI (prerequisite: a GCP project)
+samplemcp:
+  gcp:
+    projectId: <your-gcp-project-id>
+    region: global
+    credentialsSecretName: <gcp-sa-key-secret>   # or "" to use Workload Identity

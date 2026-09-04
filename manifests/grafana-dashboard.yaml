@@ -1,0 +1,12 @@
+# Lab 4 - import the IDSP dashboard (Grafana.com ID 25306).
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: ssp-monitoring-dashboard
+  namespace: monitoring
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: ssp-grafana
+  grafanaCom:
+    id: 25306

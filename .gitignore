@@ -1,0 +1,5 @@
+# Local environment — contains registry credentials
+.env
+
+# Rendered manifests / scratch output
+*.rendered.yaml
