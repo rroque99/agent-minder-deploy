@@ -302,10 +302,25 @@ The script prints the Elasticsearch `elastic` user password. **Paste it into
 `HTTP_Passwd`, replacing `<elastic_password>`) before Lab 5.
 
 `04b-enclave-routes.sh` attaches the `kibana.<DOMAIN>` and `grafana.<DOMAIN>`
-HTTPRoutes to your Gateway listener; set `GATEWAY_NAME` / `GATEWAY_NAMESPACE` in
-`.env` first. In demo mode the `ssp` chart creates the Gateway in Lab 6, so run
-this after Lab 6 — unless you already have a shared edge Gateway. Terminate TLS
-at the Gateway with a CA-signed wildcard certificate for `*.<DOMAIN>`.
+HTTPRoutes to your Gateway listener. In demo mode the `ssp` chart creates the
+Gateway in Lab 6, so run this after Lab 6 — unless you already have a shared
+edge Gateway. Terminate TLS at the Gateway with a CA-signed wildcard
+certificate for `*.<DOMAIN>`.
+
+**The Gateway is discovered, not configured.** The `ssp` chart picks the name of
+the Gateway it creates, so there is nothing useful to hard-code for the demo
+path. With `GATEWAY_NAME` empty, the script resolves it:
+
+1. Looks for Gateways in `$GATEWAY_NAMESPACE` (defaults to `$NAMESPACE`).
+2. If none are there, widens the search cluster-wide.
+3. If several turn up, narrows by `$GATEWAY_CLASS`.
+4. If it is still ambiguous, it lists the candidates and stops rather than
+   guessing.
+
+Set `GATEWAY_NAME` (and `GATEWAY_NAMESPACE`) in `.env` only to pin a specific
+Gateway — a shared edge Gateway, or to resolve an ambiguity. A pinned name is
+verified to exist before anything is applied. The same auto-discovery already
+applies to `GRAFANA_SERVICE`.
 
 Then, in the UIs:
 
@@ -564,8 +579,11 @@ namespace no longer exists.
   `gatewayClassName: <your-gatewayclass>`; this repo sets `eg` to match the
   GatewayClass created in Lab 3.
 - **Enclave HTTPRoutes** — the guide's `<your-gateway>` / `<gateway-namespace>`
-  / `<grafana-service>` placeholders became `.yaml.tpl` templates rendered from
-  `.env`, since these are `kubectl` manifests rather than Helm values files.
+  / `<grafana-service>` placeholders became `.yaml.tpl` templates rendered by
+  `envsubst`, since these are `kubectl` manifests rather than Helm values files.
+  All three values are [discovered from the cluster](#lab-4--enclave-services-observability--monitoring)
+  rather than hand-edited: the `ssp` chart names the Gateway it creates, so the
+  guide's placeholder had no answer a reader could fill in ahead of time.
 - **Lab 4 → Lab 5 ordering** — the guide applies the enclave HTTPRoutes inside
   Lab 4, but in demo mode the Gateway they attach to is created by the `ssp`
   chart in Lab 6. That step is split into `scripts/04b-enclave-routes.sh` so it
