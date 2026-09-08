@@ -220,10 +220,20 @@ ensure_namespace() {
 
 # --- helm --------------------------------------------------------------------
 # Adds --version only when AGENTMINDER_CHART_VERSION is set.
+# chart_version_args <chart-ref>
+#
+# ssp-data is versioned on its own series - the platform charts are 4.1.0+1578
+# while ssp-data tracks the weekly network-data release (e.g. 2026.26). A single
+# global pin would therefore break ssp-data, so it takes its own variable and
+# never inherits AGENTMINDER_CHART_VERSION.
 chart_version_args() {
-  if [[ -n "${AGENTMINDER_CHART_VERSION:-}" ]]; then
-    printf '%s' "--version=${AGENTMINDER_CHART_VERSION}"
-  fi
+  local chart="${1:-}" ver=""
+  case "${chart##*/}" in
+    ssp-data) ver="${SSP_DATA_CHART_VERSION:-}" ;;
+    *)        ver="${AGENTMINDER_CHART_VERSION:-}" ;;
+  esac
+  [[ -n "$ver" ]] && printf '%s' "--version=${ver}"
+  return 0
 }
 
 # helm_deploy <release> <chart> <values-basename> [timeout]
@@ -236,7 +246,7 @@ helm_deploy() {
   info "rendered ${name}.yaml.tpl -> ${valuesfile#"${ROOT_DIR}"/}"
   local -a args=(upgrade --install "$release" "$chart"
                  -n "$NAMESPACE" -f "$valuesfile" "--timeout=${timeout}")
-  local vflag; vflag="$(chart_version_args)"
+  local vflag; vflag="$(chart_version_args "$chart")"
   [[ -n "$vflag" ]] && args+=("$vflag")
   info "helm ${args[*]}"
   helm "${args[@]}"

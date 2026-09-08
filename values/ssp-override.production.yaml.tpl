@@ -4,6 +4,9 @@
 # Pair with CLICKHOUSE_ENABLED / an external database: set DB_* in .env and
 # db.enabled=false on ssp-infra. See docs/database-connectivity.md.
 global:
+  # -- shared with subcharts (chart values ~line 318)
+  imagePullSecrets:
+    - name: ${REGISTRY_SECRET_NAME}
   imageRepositoryBase: "${IMAGE_REPOSITORY_BASE}"
   useImageDigest: ${USE_IMAGE_DIGEST}   # immutable image digests
   observe:
@@ -32,12 +35,31 @@ ssp:
   featureFlags:
     aigateway: { enabled: ${AIGATEWAY_ENABLED} }
     nats:      { enabled: ${NATS_ENABLED} }
+  global:
+    ssp:
+      registry:
+        # -- pull secrets for parent-chart pods: dataseed job, db-initializer,
+        # and the platform services
+        existingSecrets:
+        - name: ${REGISTRY_SECRET_NAME}
 opentelemetry-collector:
-  imagePullSecrets:
+  imagePullSecrets:                  # takes `- name:` objects
     - name: ${REGISTRY_SECRET_NAME}
 nats:
+  global:
+    image:
+      pullSecretNames:               # NATS subchart key; bare strings
+      - ${REGISTRY_SECRET_NAME}
   natsBox:
     container:
       image:
         pullSecretNames:
           - ${REGISTRY_SECRET_NAME}
+hazelcast-enterprise:
+  image:
+    pullSecrets:                     # NOT imagePullSecrets; bare strings
+    - ${REGISTRY_SECRET_NAME}
+  mancenter:
+    image:
+      pullSecrets:
+      - ${REGISTRY_SECRET_NAME}
