@@ -75,10 +75,8 @@ kubectl get pods -n monitoring
 
 cat <<'NOTE'
 
-    Expose Kibana and Grafana once a Gateway exists:
+    Expose Kibana and Grafana on the shared edge Gateway (created in Lab 3):
       scripts/04b-enclave-routes.sh
-    In demo mode the ssp chart creates the Gateway in Lab 6, so run that script
-    after Lab 6. If you already have a shared edge Gateway, run it now.
 
     Then, in the UIs:
       Kibana  -> Data Views -> Create data view

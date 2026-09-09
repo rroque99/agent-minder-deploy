@@ -29,7 +29,8 @@ ${DB_SSL_MODE} ${DB_JDBC_URL} ${USE_IMAGE_DIGEST}
 ${SAMPLE_APP_FQDN} ${GCP_PROJECT_ID} ${GCP_REGION} ${GCP_SA_KEY_SECRET}
 ${AIGW_FQDN} ${AIGW_GROUP_ID} ${AIGW_SCOPES} ${IDSP_BASE_URL}
 ${AIGW_CREDENTIALS_SECRET} ${AIGW_TLS_SELF_SIGNED}
-${ES_VERSION} ${ES_NODE_COUNT} ${ES_STORAGE} ${GRAFANA_SERVICE}
+${ES_VERSION} ${ES_NODE_COUNT} ${ES_STORAGE} ${GRAFANA_SERVICE} ${GRAFANA_PORT}
+${EDGE_GATEWAY_NAME}
 '
 
 # --- output ------------------------------------------------------------------
@@ -84,18 +85,35 @@ set_env() {
     return 0
   fi
 
+  # SINGLE quotes, not double: .env is `source`d, so a double-quoted value
+  # containing $, ` or \ would be shell-expanded and silently corrupted - and
+  # generated passwords routinely contain $. Embedded single quotes are escaped
+  # as '\'' (close, escaped quote, reopen).
+  local esc=${val//\'/\'\\\'\'}
+
+  # Done in pure bash rather than awk/sed: `awk -v` interprets backslash escapes
+  # in the assigned value, so a password containing \ or ' arrives corrupted.
+  # printf '%s' and parameter expansion pass the bytes through untouched.
+  local line found=0 key
   tmp="$(mktemp "${TMPDIR:-/tmp}/env.XXXXXX")" || die "set_env: mktemp failed"
-  # Preserve the file's own permissions; .env holds secrets.
-  awk -v v="$var" -v val="$val" '
-    BEGIN { done = 0 }
-    # match `export VAR=...` or `VAR=...`, commented-out or not
-    $0 ~ "^[[:space:]]*#?[[:space:]]*(export[[:space:]]+)?" v "=" {
-      if (!done) { print "export " v "=\"" val "\""; done = 1 }
-      next
-    }
-    { print }
-    END { if (!done) { print ""; print "# added by set_env"; print "export " v "=\"" val "\"" } }
-  ' "${ENV_FILE}" > "$tmp" || { rm -f "$tmp"; die "set_env: failed to rewrite .env"; }
+  {
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      key=""
+      if [[ "$line" =~ ^[[:space:]]*#?[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+        key="${BASH_REMATCH[2]}"
+      fi
+      if [[ "$key" == "$var" && $found -eq 0 ]]; then
+        printf "export %s='%s'\n" "$var" "$esc"
+        found=1
+      else
+        printf '%s\n' "$line"
+      fi
+    done < "${ENV_FILE}"
+    if [[ $found -eq 0 ]]; then
+      printf '\n# added by set_env\n'
+      printf "export %s='%s'\n" "$var" "$esc"
+    fi
+  } > "$tmp" || { rm -f "$tmp"; die "set_env: failed to rewrite .env"; }
 
   cat "$tmp" > "${ENV_FILE}" && rm -f "$tmp"
   chmod 600 "${ENV_FILE}" 2>/dev/null || true

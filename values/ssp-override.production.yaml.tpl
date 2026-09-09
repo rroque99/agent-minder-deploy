@@ -25,7 +25,8 @@ ssp:
     host: ${SSP_FQDN}
     type: gatewayapi
     gatewayApi:
-      createGateway: false              # attach to an existing enterprise Gateway
+      createGateway: false              # attach to an existing Gateway
+      # defaults to the shared edge Gateway from Lab 3; override in .env
       existingGateway: ${EXISTING_GATEWAY}
       gatewayClassName: ${GATEWAY_CLASS}
     tls:

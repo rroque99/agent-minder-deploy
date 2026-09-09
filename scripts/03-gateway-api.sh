@@ -10,7 +10,8 @@
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl helm
-require_env GATEWAY_CLASS ENVOY_GATEWAY_VERSION
+require_env GATEWAY_CLASS ENVOY_GATEWAY_VERSION NAMESPACE DOMAIN \
+            SSP_FQDN EDGE_GATEWAY_NAME TLS_SECRET_NAME
 
 step "Namespace envoy-gateway-system (PSA ${PSA_LEVEL:-privileged})"
 # Created here rather than by Helm's --create-namespace, so the PSA labels are
@@ -40,15 +41,63 @@ else
     "${MANIFESTS_DIR}/gatewayclass-eg.yaml" | kubectl apply -f -
 fi
 
+step "TLS certificate for the wildcard listener"
+# The listener serves *.${DOMAIN}, so the certificate should cover that. A
+# per-host cert (e.g. ssp.${DOMAIN}) still works but browsers will warn on the
+# other hostnames.
+if kubectl get secret "${TLS_SECRET_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+  ok "${TLS_SECRET_NAME} already exists in ${NAMESPACE}"
+elif [[ "${EDGE_TLS_SELF_SIGNED:-true}" == "true" ]]; then
+  require_cmd openssl
+  info "generating a self-signed *.${DOMAIN} certificate (lab use)"
+  tmpd="$(mktemp -d "${TMPDIR:-/tmp}/edgetls.XXXXXX")"
+  openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+    -keyout "${tmpd}/tls.key" -out "${tmpd}/tls.crt" \
+    -subj "/CN=*.${DOMAIN}" \
+    -addext "subjectAltName=DNS:*.${DOMAIN},DNS:${DOMAIN}" >/dev/null 2>&1 \
+    || die "openssl failed to generate the certificate"
+  kubectl create secret tls "${TLS_SECRET_NAME}" \
+    --cert="${tmpd}/tls.crt" --key="${tmpd}/tls.key" -n "${NAMESPACE}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  rm -rf "${tmpd}"
+  ok "${TLS_SECRET_NAME} created (self-signed - replace with a CA-signed wildcard for production)"
+else
+  die "Secret ${TLS_SECRET_NAME} not found in ${NAMESPACE}. Create it, or set EDGE_TLS_SELF_SIGNED=true in .env to generate a self-signed one."
+fi
+
+step "Shared edge Gateway ${NAMESPACE}/${EDGE_GATEWAY_NAME}"
+# Created here, before the ssp chart (Lab 6), so the chart can attach to it
+# with createGateway=false instead of provisioning a second Gateway.
+render "${MANIFESTS_DIR}/gateway-edge.yaml.tpl" | kubectl apply -f -
+kubectl wait --for=condition=Programmed --timeout=5m \
+  gateway/"${EDGE_GATEWAY_NAME}" -n "${NAMESPACE}" \
+  || warn "Gateway not Programmed yet - check 'kubectl describe gateway ${EDGE_GATEWAY_NAME} -n ${NAMESPACE}'"
+
 step "Success criteria"
 kubectl get gatewayclass "${GATEWAY_CLASS}"
 kubectl get pods -n envoy-gateway-system
-kubectl get crd | grep gateway || true
+kubectl get gateway "${EDGE_GATEWAY_NAME}" -n "${NAMESPACE}" -o wide
 
-cat <<'NOTE'
+step "Gateway address - point ALL DNS here"
+addr="$(kubectl get gateway "${EDGE_GATEWAY_NAME}" -n "${NAMESPACE}" \
+  -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || true)"
+if [[ -n "${addr}" ]]; then
+  ok "${addr}"
+  info "Create A records pointing at it:"
+  info "  ${SSP_FQDN}"
+  info "  mgmt-${SSP_FQDN}"
+  info "  kibana.${DOMAIN}"
+  info "  grafana.${DOMAIN}"
+  info "  ${SAMPLE_APP_FQDN}   (if deploying Lab 9)"
+else
+  warn "No address assigned yet. If it stays empty the cluster has no"
+  warn "load-balancer provider - see 'kubectl get svc -n envoy-gateway-system'."
+fi
 
-    Next: reference this GatewayClass from values/ssp-override.<profile>.yaml
-      ssp.ingress.type: gatewayapi
-      ssp.ingress.gatewayApi.gatewayClassName: <GATEWAY_CLASS>
-      ssp.ingress.gatewayApi.createGateway: true   (chart-managed mode)
+cat <<NOTE
+
+    The ssp chart attaches to this Gateway rather than creating its own:
+      ssp.ingress.gatewayApi.createGateway:  false
+      ssp.ingress.gatewayApi.existingGateway: ${EDGE_GATEWAY_NAME}
+    Both values templates are already set up that way.
 NOTE

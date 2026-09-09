@@ -87,7 +87,7 @@ case "${PROFILE}" in
 esac
 
 later ELASTIC_PASSWORD "set by Lab 4 (scripts/04-enclave-services.sh)"
-later GATEWAY_NAME     "set by Lab 4b once a Gateway exists (after Lab 6)"
+later GATEWAY_NAME     "optional override; empty = the shared edge Gateway from Lab 3"
 later GRAFANA_SERVICE  "set by Lab 4b (scripts/04b-enclave-routes.sh)"
 
 if [[ -n "${unset_now# }" ]]; then

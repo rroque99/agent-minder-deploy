@@ -14,9 +14,15 @@ ssp:
     host: ${SSP_FQDN}
     type: gatewayapi               # Kubernetes Gateway API (edge routing)
     gatewayApi:
-      createGateway: true          # let the chart create the Gateway
+      # Attach to the shared edge Gateway created in Lab 3 rather than making a
+      # second one. That Gateway has a *.${DOMAIN} wildcard listener accepting
+      # routes from any namespace, so the platform, sample app and enclave UIs
+      # all share one external address.
+      createGateway: false
+      existingGateway: ${EDGE_GATEWAY_NAME}
       gatewayClassName: ${GATEWAY_CLASS}
-      skipWildcardListener: true
+    tls:
+      secretName: ${TLS_SECRET_NAME}
   featureFlags:
     aigateway:
       enabled: ${AIGATEWAY_ENABLED}  # central (in-platform) AI Gateway

@@ -2,7 +2,6 @@
 # Run the core deployment path end to end: Labs 2-8.
 #
 # Optional labs are not included -- run them yourself:
-#   scripts/04b-enclave-routes.sh   expose Kibana/Grafana (needs a Gateway)
 #   scripts/09-sample-app.sh        Sample App & MCP Playground
 #   scripts/11-aigateway.sh         external / standalone AI Gateway
 #
@@ -23,6 +22,9 @@ run 00-preflight.sh
 run 02-namespace-and-repo.sh
 [[ "${SKIP_GATEWAY:-}" == "1" ]] || run 03-gateway-api.sh
 [[ "${SKIP_ENCLAVE:-}" == "1" ]] || run 04-enclave-services.sh
+# 04b only needs the Gateway (Lab 3) and the enclave services (Lab 4), so it
+# runs here rather than being deferred - the shared edge Gateway already exists.
+[[ "${SKIP_ENCLAVE:-}" == "1" ]] || run 04b-enclave-routes.sh
 
 # Lab 4 writes ELASTIC_PASSWORD into .env itself, so no manual step is needed.
 # Re-read it here in case a sub-script updated the file after we sourced it.
@@ -44,4 +46,4 @@ run 10-admin-credentials.sh
 
 step "Core deployment complete"
 info "Admin Console: https://${SSP_FQDN}  (bootstrap credentials expire in 48h)"
-info "Next: scripts/04b-enclave-routes.sh, then the optional labs 9 and 11."
+info "Next: the optional labs - scripts/09-sample-app.sh and scripts/11-aigateway.sh."

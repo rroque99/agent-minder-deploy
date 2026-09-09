@@ -1,90 +1,60 @@
 #!/usr/bin/env bash
-# Lab 4 (continued) - attach kibana.<DOMAIN> and grafana.<DOMAIN> HTTPRoutes to
-# your Gateway API listener. Terminate TLS there with a CA-signed wildcard
-# certificate for *.<DOMAIN>.
+# Lab 4 (continued) - expose Kibana and Grafana.
 #
-# Run after a Gateway exists: either your own shared edge Gateway, or the one
-# the ssp chart creates in Lab 6 when gatewayApi.createGateway=true.
+# Creates a dedicated enclave Gateway with listeners for kibana.<DOMAIN> and
+# grafana.<DOMAIN> that accept routes from any namespace, then attaches the two
+# HTTPRoutes to it. Safe to run any time after Lab 4 - it does not depend on the
+# ssp chart's Gateway (see the comment below for why it cannot use it).
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl envsubst
-require_env DOMAIN NAMESPACE
+require_env DOMAIN NAMESPACE EDGE_GATEWAY_NAME
 
-# GATEWAY_NAME is optional. Left empty (or still a <placeholder>), the Gateway
-# is discovered from the cluster: the ssp chart names the one it creates in
-# Lab 6, so there is nothing sensible to hard-code for the demo path.
-# Default both here so `set -u` is satisfied even when .env omits them entirely.
-GATEWAY_NAME="${GATEWAY_NAME:-}"
+# The enclave routes attach to the shared edge Gateway created in Lab 3.
+# Its *.${DOMAIN} wildcard listener accepts routes from any namespace, so the
+# routes in logging/ and monitoring/ attach without a Gateway change.
+#
+# Override GATEWAY_NAME/GATEWAY_NAMESPACE in .env to target a different Gateway.
+GATEWAY_NAME="${GATEWAY_NAME:-${EDGE_GATEWAY_NAME}}"
 GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-${NAMESPACE}}"
-case "${GATEWAY_NAME}" in *'<'*) GATEWAY_NAME="" ;; esac
+case "${GATEWAY_NAME}" in *'<'*) GATEWAY_NAME="${EDGE_GATEWAY_NAME}" ;; esac
 
-# gw_list <namespace>|-A  ->  lines of "<namespace> <name> <gatewayclass>"
-gw_list() {
-  local scope="$1"
-  local jp='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.gatewayClassName}{"\n"}{end}'
-  if [[ "$scope" == "-A" ]]; then
-    kubectl get gateway -A -o jsonpath="$jp" 2>/dev/null || true
-  else
-    kubectl get gateway -n "$scope" -o jsonpath="$jp" 2>/dev/null || true
-  fi
-}
+step "Target Gateway: ${GATEWAY_NAMESPACE}/${GATEWAY_NAME}"
+kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" -o wide \
+  || die "Gateway ${GATEWAY_NAMESPACE}/${GATEWAY_NAME} not found - run 03-gateway-api.sh first."
 
-if [[ -n "${GATEWAY_NAME}" ]]; then
-  step "Target Gateway (pinned): ${GATEWAY_NAMESPACE}/${GATEWAY_NAME}"
-  kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" \
-    || die "Gateway ${GATEWAY_NAMESPACE}/${GATEWAY_NAME} not found. kubectl get gateway -A"
-else
-  step "Discover the Gateway"
-  # Prefer $GATEWAY_NAMESPACE (where the ssp chart puts it), then cluster-wide.
-  found="$(gw_list "${GATEWAY_NAMESPACE}" | grep -v '^[[:space:]]*$' || true)"
-  scope="namespace ${GATEWAY_NAMESPACE}"
-  if [[ -z "${found}" ]]; then
-    found="$(gw_list -A | grep -v '^[[:space:]]*$' || true)"
-    scope="the cluster"
-  fi
-
-  count="$(printf '%s\n' "${found}" | grep -c . || true)"
-  if [[ "${count}" -eq 0 ]]; then
-    die "No Gateway found in ${scope}. In demo mode the ssp chart creates it in Lab 6 - run 06-platform.sh first, or set GATEWAY_NAME to a shared edge Gateway."
-  fi
-
-  # More than one candidate: narrow by GATEWAY_CLASS before giving up.
-  if [[ "${count}" -gt 1 ]] && [[ -n "${GATEWAY_CLASS:-}" ]]; then
-    narrowed="$(printf '%s\n' "${found}" | awk -v c="${GATEWAY_CLASS}" '$3 == c' || true)"
-    narrowed_count="$(printf '%s\n' "${narrowed}" | grep -c . || true)"
-    if [[ "${narrowed_count}" -eq 1 ]]; then
-      info "narrowed ${count} candidates to gatewayClassName=${GATEWAY_CLASS}"
-      found="${narrowed}"; count=1
-    fi
-  fi
-
-  if [[ "${count}" -gt 1 ]]; then
-    warn "Found ${count} Gateways in ${scope}:"
-    printf '%s\n' "${found}" | awk '{printf "       %s/%s  (class %s)\n", $1, $2, $3}' >&2
-    die "Ambiguous - set GATEWAY_NAME (and GATEWAY_NAMESPACE) in .env to pick one."
-  fi
-
-  gw_ns="$(printf '%s\n' "${found}" | awk '{print $1}')"
-  gw_nm="$(printf '%s\n' "${found}" | awk '{print $2}')"
-  gw_class="$(printf '%s\n' "${found}" | awk '{print $3}')"
-  info "found ${gw_ns}/${gw_nm} (class ${gw_class})"
-  # Persist so later runs and other scripts reuse it without re-discovering.
-  set_env GATEWAY_NAMESPACE "${gw_ns}"
-  set_env GATEWAY_NAME      "${gw_nm}"
+# A listener must both accept routes from other namespaces and match the
+# kibana./grafana. hostnames, or the routes report NotAllowedByListeners.
+if ! kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" \
+     -o jsonpath='{range .spec.listeners[*]}{.allowedRoutes.namespaces.from}{"\n"}{end}' \
+     2>/dev/null | grep -qE '^(All|Selector)$'; then
+  warn "No listener on ${GATEWAY_NAME} accepts routes from other namespaces"
+  warn "(allowedRoutes.namespaces.from is 'Same' everywhere). The kibana and"
+  warn "grafana routes live in logging/ and monitoring/ and will be refused."
+  warn "Re-run scripts/03-gateway-api.sh to create the shared edge Gateway."
 fi
 export GATEWAY_NAME GATEWAY_NAMESPACE
 
 step "Grafana service"
+GRAFANA_PORT="${GRAFANA_PORT:-3000}"
 if [[ -n "${GRAFANA_SERVICE:-}" ]]; then
   info "GRAFANA_SERVICE=${GRAFANA_SERVICE} (from .env)"
 else
-  discovered="$(kubectl get svc -n monitoring -o name 2>/dev/null \
-    | grep -i grafana | grep -v operator-metrics | head -1 | cut -d/ -f2 || true)"
-  [[ -n "${discovered}" ]] || \
-    die "No Grafana service found in 'monitoring'. Set GRAFANA_SERVICE in .env."
+  # Select the service that actually exposes the Grafana HTTP port. Matching on
+  # the name alone picks up siblings like '-alerting' and '-operator-metrics',
+  # which do not serve 3000 - the HTTPRoute then fails with PortNotFound.
+  discovered="$(kubectl get svc -n monitoring \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .spec.ports[*]}{.port}{","}{end}{"\n"}{end}' \
+    2>/dev/null | awk -v p="${GRAFANA_PORT}" '$2 ~ "(^|,)" p "(,|$)" {print $1}' \
+    | grep -i grafana | head -1 || true)"
+  if [[ -z "${discovered}" ]]; then
+    warn "No service in 'monitoring' exposes port ${GRAFANA_PORT}. Candidates:"
+    kubectl get svc -n monitoring 2>/dev/null | sed 's/^/       /' >&2
+    die "Set GRAFANA_SERVICE (and GRAFANA_PORT if not 3000) in .env."
+  fi
   set_env GRAFANA_SERVICE "${discovered}"
 fi
-export GRAFANA_SERVICE
+export GRAFANA_SERVICE GRAFANA_PORT
 
 step "Apply HTTPRoutes"
 render "${MANIFESTS_DIR}/httproute-kibana.yaml.tpl"  | kubectl apply -f -
@@ -93,6 +63,12 @@ render "${MANIFESTS_DIR}/httproute-grafana.yaml.tpl" | kubectl apply -f -
 step "Success criteria"
 kubectl get httproute kibana  -n logging    -o wide
 kubectl get httproute grafana -n monitoring -o wide
-info "Expect Accepted=True on both. Then browse:"
+info "Expect Accepted=True and ResolvedRefs=True on both."
+echo
+step "Gateway address - point DNS here"
+kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" \
+  -o jsonpath='{range .status.addresses[*]}    {.value}{"\n"}{end}' 2>/dev/null || true
+info "kibana.${DOMAIN}  and  grafana.${DOMAIN}  must resolve to that address."
+info "Then browse:"
 info "  https://kibana.${DOMAIN}"
 info "  https://grafana.${DOMAIN}"

@@ -18,6 +18,10 @@ TPL="ssp-override.${PROFILE}"
 [[ -f "${VALUES_DIR}/${TPL}.yaml.tpl" ]] || \
   die "Unknown SSP_PROFILE='${PROFILE}' (expected demo or production)"
 
+# The production template attaches to $EXISTING_GATEWAY; empty would render an
+# existingGateway with no value and fail at apply time in a confusing way.
+[[ "${PROFILE}" != "production" ]] || require_env EXISTING_GATEWAY
+
 step "Profile: ${PROFILE}"
 info "template: values/${TPL}.yaml.tpl"
 info "ingress host: ${SSP_FQDN}  (from .env)"

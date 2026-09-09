@@ -49,6 +49,7 @@ infrastructure are required.
 │   └── ssp-aigateway-override.yaml.tpl    Lab 11 — external AI Gateway
 ├── manifests/                kubectl manifests (.tpl = rendered from .env)
 │   ├── gatewayclass-eg.yaml               Lab 3
+│   ├── gateway-edge.yaml.tpl              Lab 3 — the shared edge Gateway
 │   ├── elasticsearch.yaml.tpl             Lab 4 — version/count/storage from .env
 │   ├── kibana.yaml.tpl                    Lab 4
 │   ├── grafana-datasource.yaml            Lab 4
@@ -224,6 +225,54 @@ edge Gateway.
 
 ---
 
+## Networking: one shared edge Gateway
+
+Every hostname is served by a **single** Gateway — one external IP, one TLS
+certificate, one set of DNS records:
+
+```
+              edge-gateway  (ssp namespace, *.${DOMAIN} :443 + :80)
+                     │  allowedRoutes.namespaces.from: All
+     ┌───────────────┼────────────────┬──────────────────┐
+ ssp/ssp-ssp-*   logging/kibana   monitoring/grafana   ssp/sample-app
+ ssp.${DOMAIN}   kibana.${DOMAIN}  grafana.${DOMAIN}   sampleapp-*.${DOMAIN}
+```
+
+`03-gateway-api.sh` creates it, before any chart is installed, so the `ssp` and
+`ssp-sample-app` charts attach with `createGateway: false` +
+`existingGateway: $EDGE_GATEWAY_NAME` instead of each provisioning its own.
+
+**Why it lives in `$NAMESPACE`, not `envoy-gateway-system`.** The `ssp` chart
+creates its HTTPRoutes in its release namespace, so a Gateway there is
+same-namespace for them and needs no cross-namespace support from the chart.
+`from: All` then admits the enclave routes from `logging` and `monitoring`. The
+TLS Secret must also sit beside the Gateway — a Gateway cannot reference a
+Secret in another namespace without a `ReferenceGrant`.
+
+**Why not the chart's own Gateway.** With `createGateway: true` the `ssp` chart
+produces listeners that are `allowedRoutes.namespaces.from: Same` and whose
+hostnames cover only the platform FQDN. Routes in `logging`/`monitoring` are
+refused with `NotAllowedByListeners`, and patching that Gateway does not last —
+the chart owns it, so the next `helm upgrade` reverts the change.
+
+**TLS.** The wildcard listener wants a `*.$DOMAIN` certificate. If
+`$TLS_SECRET_NAME` does not exist, Lab 3 generates a self-signed one
+(`EDGE_TLS_SELF_SIGNED=true`). One wildcard cert covers every hostname, so there
+is no SNI mismatch. Replace it with a CA-signed wildcard for production.
+
+**DNS.** Point every hostname at the Gateway's address, which Lab 3 prints:
+
+```bash
+kubectl get gateway "$EDGE_GATEWAY_NAME" -n "$NAMESPACE" \
+  -o jsonpath='{.status.addresses[0].value}{"\n"}'
+```
+
+An address that never appears means the cluster has no load-balancer provider —
+common on bare metal and on vSphere/VKS without NSX ALB. Install MetalLB, or
+expose the Envoy service as a NodePort and point DNS at a node.
+
+---
+
 ## Pod Security Admission
 
 Every namespace these scripts create is labelled for Pod Security Admission
@@ -375,25 +424,20 @@ no manual step. Using your own Elasticsearch instead? Set `ELASTIC_HOST`,
 discovery is skipped.
 
 `04b-enclave-routes.sh` attaches the `kibana.<DOMAIN>` and `grafana.<DOMAIN>`
-HTTPRoutes to your Gateway listener. In demo mode the `ssp` chart creates the
-Gateway in Lab 6, so run this after Lab 6 — unless you already have a shared
-edge Gateway. Terminate TLS at the Gateway with a CA-signed wildcard
-certificate for `*.<DOMAIN>`.
+HTTPRoutes to the shared edge Gateway. It needs only Lab 3 (the Gateway) and
+Lab 4 (the services), so it runs immediately after Lab 4 — `deploy-all.sh`
+includes it in sequence.
 
-**The Gateway is discovered, not configured.** The `ssp` chart picks the name of
-the Gateway it creates, so there is nothing useful to hard-code for the demo
-path. With `GATEWAY_NAME` empty, the script resolves it:
+**It attaches to the shared edge Gateway** created in Lab 3 (see
+[Networking](#networking-one-shared-edge-gateway)), whose `*.$DOMAIN` wildcard
+listener accepts routes from any namespace. Override `GATEWAY_NAME` /
+`GATEWAY_NAMESPACE` in `.env` to target a different Gateway; the script warns if
+no listener on it accepts cross-namespace routes.
 
-1. Looks for Gateways in `$GATEWAY_NAMESPACE` (defaults to `$NAMESPACE`).
-2. If none are there, widens the search cluster-wide.
-3. If several turn up, narrows by `$GATEWAY_CLASS`.
-4. If it is still ambiguous, it lists the candidates and stops rather than
-   guessing.
-
-Set `GATEWAY_NAME` (and `GATEWAY_NAMESPACE`) in `.env` only to pin a specific
-Gateway — a shared edge Gateway, or to resolve an ambiguity. A pinned name is
-verified to exist before anything is applied. The same auto-discovery already
-applies to `GRAFANA_SERVICE`.
+`GRAFANA_SERVICE` is discovered by finding the service in `monitoring` that
+actually exposes `$GRAFANA_PORT` — matching on the name alone picks up siblings
+like `-alerting`, which do not serve 3000 and make the route fail with
+`PortNotFound`.
 
 Then, in the UIs:
 

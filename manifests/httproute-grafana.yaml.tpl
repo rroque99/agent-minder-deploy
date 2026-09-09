@@ -14,4 +14,4 @@ spec:
   rules:
   - backendRefs:
     - name: ${GRAFANA_SERVICE}
-      port: 3000
+      port: ${GRAFANA_PORT}

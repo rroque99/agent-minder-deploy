@@ -11,9 +11,9 @@ ingress:
   host: ${SAMPLE_APP_FQDN}
   gatewayApi:
     gatewayType: auto
-    createGateway: true          # let the chart create the Gateway
+    createGateway: false         # attach to the shared edge Gateway (Lab 3)
+    existingGateway: ${EDGE_GATEWAY_NAME}
     gatewayClassName: ${GATEWAY_CLASS}
-    skipWildcardListener: true
   tls:
     secretName: ${TLS_SECRET_NAME}
 global:
