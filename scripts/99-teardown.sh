@@ -1,22 +1,40 @@
 #!/usr/bin/env bash
-# Teardown (optional) - uninstall in reverse dependency order.
+# Teardown (optional) - uninstall in reverse dependency order, then clean up
+# what `helm uninstall` leaves behind.
 #
-# Demo clusters cost money while they run. Database, ClickHouse, PVCs, secrets
-# and any externally managed Gateway persist beyond helm uninstall -- clean
-# those up deliberately. If you created the cluster solely for this course,
-# delete the cluster itself to stop all charges.
+# helm uninstall is NOT a clean slate for these charts. Three classes of object
+# survive it, and each needs different handling:
 #
-#   scripts/99-teardown.sh                 # uninstall the Helm releases
-#   DELETE_NAMESPACE=1 scripts/99-teardown.sh   # also delete the namespace
-#   TEARDOWN_ENCLAVE=1 scripts/99-teardown.sh   # also remove logging/monitoring
+#   1. Spent Jobs (e.g. the dataseed job). Harmless but they BLOCK a reinstall:
+#      the chart refuses to render while it sees an "active dataseed process".
+#      Removed by default.
+#   2. Signing/encryption key secrets (ISK, MEK). Kept by Helm on purpose - the
+#      MEK decrypts data already in the database and the ISK is what ClickHouse
+#      TLS trusts. Deleting them ORPHANS that data, so they are kept unless you
+#      pass DELETE_KEYS=1, which only makes sense alongside dropping the DB.
+#   3. Objects these scripts created with kubectl rather than Helm: the shared
+#      edge Gateway, its TLS secret, and the Kibana/Grafana HTTPRoutes. No
+#      release owns them, so nothing else will ever remove them.
+#
+# Database, ClickHouse and PVCs also outlive uninstall - deleting the namespace
+# is what clears those. Demo clusters cost money while they run; if the cluster
+# exists only for this course, delete the cluster itself.
+#
+#   scripts/99-teardown.sh                      # releases + spent jobs + our objects
+#   DELETE_KEYS=1       scripts/99-teardown.sh  # ALSO the ISK/MEK secrets (destructive)
+#   DELETE_NAMESPACE=1  scripts/99-teardown.sh  # ALSO the namespace (PVCs, DB, secrets)
+#   TEARDOWN_ENCLAVE=1  scripts/99-teardown.sh  # ALSO logging + monitoring
+#   TEARDOWN_GATEWAY=1  scripts/99-teardown.sh  # ALSO Envoy Gateway + GatewayClass
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl helm
 require_env NAMESPACE RELEASENAME
 
 printf '\n%sThis will uninstall AgentMinder from namespace "%s".%s\n' "$_Y" "${NAMESPACE}" "$_0"
-[[ "${DELETE_NAMESPACE:-}" == "1" ]] && printf '%sThe namespace itself (and its PVCs/secrets) will be DELETED.%s\n' "$_R" "$_0"
+[[ "${DELETE_KEYS:-}" == "1" ]] && printf '%sThe ISK/MEK key secrets will be DELETED - data encrypted with them becomes unrecoverable.%s\n' "$_R" "$_0"
+[[ "${DELETE_NAMESPACE:-}" == "1" ]] && printf '%sThe namespace itself (PVCs, database, secrets) will be DELETED.%s\n' "$_R" "$_0"
 [[ "${TEARDOWN_ENCLAVE:-}" == "1" ]] && printf '%sThe logging and monitoring namespaces will be DELETED.%s\n' "$_R" "$_0"
+[[ "${TEARDOWN_GATEWAY:-}" == "1" ]] && printf '%sEnvoy Gateway and the GatewayClass will be DELETED (cluster-wide).%s\n' "$_R" "$_0"
 if [[ "${ASSUME_YES:-}" != "1" ]]; then
   read -r -p 'Type the namespace name to confirm: ' reply
   [[ "$reply" == "${NAMESPACE}" ]] || die "Aborted."
@@ -31,31 +49,111 @@ uninstall() { # uninstall <release> <note>
   fi
 }
 
+# --- 1. Helm releases, reverse dependency order ------------------------------
 uninstall "aigw-${RELEASENAME}"   "external AI Gateway, Lab 11"
 uninstall "sample-${RELEASENAME}" "sample app / MCP Playground, Lab 9"
 uninstall "${RELEASENAME}"        "platform, Lab 6"
 uninstall "data-${RELEASENAME}"   "risk data schema + risk/network data, Lab 7"
 uninstall "infra-${RELEASENAME}"  "database, ClickHouse, Fluent Bit, Lab 5"
 
+# --- 2. Survivor class 1: spent Jobs -----------------------------------------
+# These block a reinstall, so clear them by default. Safe: the releases above
+# are already gone, so nothing is mid-flight.
+step "Leftover Jobs in ${NAMESPACE}"
+jobs="$(kubectl get jobs -n "${NAMESPACE}" -o name 2>/dev/null || true)"
+if [[ -n "${jobs}" ]]; then
+  printf '%s\n' "${jobs}" | sed 's/^/    /'
+  printf '%s\n' "${jobs}" | xargs -r kubectl delete -n "${NAMESPACE}" --ignore-not-found
+  ok "removed - the chart would otherwise refuse to reinstall"
+else
+  info "none"
+fi
+
+# --- 3. Survivor class 3: objects our scripts created with kubectl -----------
+# No Helm release owns these, so only this script will ever remove them.
+step "Objects created outside Helm"
+kubectl delete httproute kibana  -n logging    --ignore-not-found 2>/dev/null || true
+kubectl delete httproute grafana -n monitoring --ignore-not-found 2>/dev/null || true
+info "enclave HTTPRoutes removed (created by 04b)"
+
+if [[ -n "${EDGE_GATEWAY_NAME:-}" ]]; then
+  kubectl delete gateway "${EDGE_GATEWAY_NAME}" -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
+  info "shared edge Gateway ${EDGE_GATEWAY_NAME} removed (created by 03)"
+  # Only remove the TLS secret if 03 generated it; a CA-signed cert you supplied
+  # is not ours to delete.
+  if [[ "${EDGE_TLS_SELF_SIGNED:-true}" == "true" && -n "${TLS_SECRET_NAME:-}" ]]; then
+    kubectl delete secret "${TLS_SECRET_NAME}" -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
+    info "self-signed ${TLS_SECRET_NAME} removed"
+  else
+    info "keeping ${TLS_SECRET_NAME:-TLS secret} - not generated by these scripts"
+  fi
+fi
+
+# --- 4. Survivor class 2: key secrets (destructive) --------------------------
+step "Signing / encryption key secrets"
+isk="${RELEASENAME}-ssp-keys-isk"
+mek="${RELEASENAME}-ssp-keys-mek"
+if [[ "${DELETE_KEYS:-}" == "1" ]]; then
+  # De-duplicate: the conventional names and the .env values usually coincide.
+  for s in $(printf '%s\n' "${isk}" "${mek}" "${ISK_EXISTING_SECRET:-}" \
+                            "${MEK_EXISTING_SECRET:-}" | grep -v '^$' | sort -u); do
+    kubectl delete secret "$s" -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
+  done
+  warn "key secrets deleted - any data still encrypted with them is unrecoverable"
+  set_env ISK_EXISTING_SECRET ""
+  set_env MEK_EXISTING_SECRET ""
+else
+  for s in "${isk}" "${mek}"; do
+    if kubectl get secret "$s" -n "${NAMESPACE}" >/dev/null 2>&1; then
+      info "keeping ${s} - a reinstall reuses it (06-platform.sh detects it)"
+    fi
+  done
+  info "pass DELETE_KEYS=1 to remove them, but only if the database goes too"
+fi
+
+# --- 5. Namespace ------------------------------------------------------------
 if [[ "${DELETE_NAMESPACE:-}" == "1" ]]; then
   step "kubectl delete ns ${NAMESPACE}"
   kubectl delete ns "${NAMESPACE}"
+  # The keys went with the namespace, so a reinstall must not reference them.
+  set_env ISK_EXISTING_SECRET ""
+  set_env MEK_EXISTING_SECRET ""
 else
   step "Remaining objects in ${NAMESPACE}"
   kubectl get all,pvc,secret -n "${NAMESPACE}" 2>/dev/null || true
-  info "PVCs and secrets survive helm uninstall."
+  info "PVCs, the database and remaining secrets survive helm uninstall."
   info "Re-run with DELETE_NAMESPACE=1 to remove the namespace and clear them."
 fi
 
+# --- 6. Enclave stack --------------------------------------------------------
 if [[ "${TEARDOWN_ENCLAVE:-}" == "1" ]]; then
   step "Enclave services"
   helm uninstall grafana-operator    -n monitoring 2>/dev/null || true
   helm uninstall prometheus-operator -n monitoring 2>/dev/null || true
-  kubectl delete -n logging -f "${MANIFESTS_DIR}/kibana.yaml"        2>/dev/null || true
-  kubectl delete -n logging -f "${MANIFESTS_DIR}/elasticsearch.yaml" 2>/dev/null || true
+  # These are .tpl templates - render them to get something kubectl can match.
+  render "${MANIFESTS_DIR}/kibana.yaml.tpl"        | kubectl delete -n logging -f - --ignore-not-found 2>/dev/null || true
+  render "${MANIFESTS_DIR}/elasticsearch.yaml.tpl" | kubectl delete -n logging -f - --ignore-not-found 2>/dev/null || true
   helm uninstall elastic-operator -n logging 2>/dev/null || true
   kubectl delete ns monitoring logging 2>/dev/null || true
+  # Elasticsearch is gone, so the captured password is meaningless.
+  set_env ELASTIC_PASSWORD ""
+  set_env GRAFANA_SERVICE ""
 fi
+
+# --- 7. Gateway API controller ----------------------------------------------
+if [[ "${TEARDOWN_GATEWAY:-}" == "1" ]]; then
+  step "Envoy Gateway and GatewayClass"
+  kubectl delete gatewayclass "${GATEWAY_CLASS:-eg}" --ignore-not-found 2>/dev/null || true
+  helm uninstall eg -n envoy-gateway-system 2>/dev/null || true
+  kubectl delete ns envoy-gateway-system 2>/dev/null || true
+fi
+
+# --- 8. Reset discovered values so the next run rediscovers ------------------
+# .env is the source of truth, so it must not point at objects that no longer
+# exist - a stale GATEWAY_NAME would make 04b attach routes to nothing.
+step "Resetting discovered values in .env"
+set_env GATEWAY_NAME ""
+set_env GATEWAY_NAMESPACE ""
 
 step "Teardown complete"
 info "If this cluster existed only for the course, delete the cluster (GKE/EKS/AKS/VKS)."

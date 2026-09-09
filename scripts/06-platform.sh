@@ -45,6 +45,31 @@ for _pair in "isk:ISK_EXISTING_SECRET" "mek:MEK_EXISTING_SECRET"; do
   fi
 done
 
+step "ClickHouse TLS trust"
+# Must be pinned whenever an ISK is reused: an empty value plus a provided ISK
+# makes the chart use the ISK as ClickHouse's CA, which is only right if
+# ClickHouse was provisioned with it. It was not - ssp-infra (Lab 5) creates
+# ClickHouse before any ISK exists.
+if [[ -n "${CLICKHOUSE_TLS_SECRET:-}" ]]; then
+  ok "CLICKHOUSE_TLS_SECRET=${CLICKHOUSE_TLS_SECRET} (from .env)"
+else
+  _ch=""
+  for _cand in "${RELEASENAME}-ssp-ch-tls" "clickhouse-${RELEASENAME}-ssp-ch-tls"; do
+    if kubectl get secret "${_cand}" -n "${NAMESPACE}" >/dev/null 2>&1; then _ch="${_cand}"; break; fi
+  done
+  if [[ -n "${_ch}" ]]; then
+    info "found ClickHouse TLS secret ${_ch}"
+    set_env CLICKHOUSE_TLS_SECRET "${_ch}"
+  elif [[ -n "${ISK_EXISTING_SECRET:-}" ]]; then
+    warn "Reusing an ISK but no ClickHouse TLS secret found in ${NAMESPACE}."
+    warn "observe-ingestor will trust the ISK as ClickHouse's CA and crash-loop."
+    warn "Find it with: kubectl get secret -n ${NAMESPACE} | grep -i ch"
+    warn "then set CLICKHOUSE_TLS_SECRET in .env."
+  else
+    info "no ClickHouse TLS secret found - chart default applies"
+  fi
+fi
+
 step "helm install ${RELEASENAME}"
 helm_deploy "${RELEASENAME}" "${HELM_REPO}/ssp" "${TPL}" 120m
 

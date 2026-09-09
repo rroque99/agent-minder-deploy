@@ -28,6 +28,20 @@ ssp:
       enabled: ${AIGATEWAY_ENABLED}  # central (in-platform) AI Gateway
     nats:
       enabled: ${NATS_ENABLED}       # NATS JetStream - required for observability
+  observe:
+    clickhouse:
+      tls:
+        # Pin the ClickHouse TLS secret explicitly.
+        #
+        # Left empty, the chart falls back to the ISK *if an ISK is provided* -
+        # and that is only correct when ClickHouse was provisioned with the same
+        # ISK. ClickHouse comes from ssp-infra (Lab 5), which runs BEFORE any ISK
+        # exists, so it has its own self-signed cert. Combining an ISK with an
+        # empty value here makes observe-ingestor trust the wrong CA and fail
+        # with "x509: certificate signed by unknown authority".
+        #
+        # 06-platform.sh detects <release>-ssp-ch-tls and fills this in.
+        existingSecret: "${CLICKHOUSE_TLS_SECRET}"
   keys:
     # Reuse the keys from a previous install of this release. Helm keeps
     # these secrets on uninstall on purpose: the MEK protects data already
