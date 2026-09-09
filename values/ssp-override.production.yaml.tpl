@@ -36,6 +36,17 @@ ssp:
   featureFlags:
     aigateway: { enabled: ${AIGATEWAY_ENABLED} }
     nats:      { enabled: ${NATS_ENABLED} }
+  keys:
+    # Reuse the keys from a previous install of this release. Helm keeps
+    # these secrets on uninstall on purpose: the MEK protects data already
+    # encrypted in the database, and ClickHouse TLS trusts the ISK it was
+    # provisioned with. Regenerating either orphans existing data.
+    # Empty on a genuinely fresh install; 06-platform.sh detects and fills
+    # these in automatically.
+    isk:
+      existingSecret: "${ISK_EXISTING_SECRET}"
+    mek:
+      existingSecret: "${MEK_EXISTING_SECRET}"
   global:
     ssp:
       registry:
