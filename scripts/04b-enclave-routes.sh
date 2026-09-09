@@ -37,8 +37,22 @@ export GATEWAY_NAME GATEWAY_NAMESPACE
 
 step "Grafana service"
 GRAFANA_PORT="${GRAFANA_PORT:-3000}"
+# Validate a pinned value rather than trusting it: a previously-discovered
+# wrong name (e.g. the '-alerting' service, which does not serve 3000) would
+# otherwise stay in .env forever and keep failing with PortNotFound.
 if [[ -n "${GRAFANA_SERVICE:-}" ]]; then
-  info "GRAFANA_SERVICE=${GRAFANA_SERVICE} (from .env)"
+  if kubectl get svc "${GRAFANA_SERVICE}" -n monitoring \
+       -o jsonpath='{range .spec.ports[*]}{.port}{","}{end}' 2>/dev/null \
+       | grep -qE "(^|,)${GRAFANA_PORT}(,|$)"; then
+    ok "GRAFANA_SERVICE=${GRAFANA_SERVICE} serves port ${GRAFANA_PORT}"
+  else
+    warn "GRAFANA_SERVICE=${GRAFANA_SERVICE} does not serve port ${GRAFANA_PORT} - rediscovering"
+    GRAFANA_SERVICE=""
+  fi
+fi
+
+if [[ -n "${GRAFANA_SERVICE:-}" ]]; then
+  :
 else
   # Select the service that actually exposes the Grafana HTTP port. Matching on
   # the name alone picks up siblings like '-alerting' and '-operator-metrics',
