@@ -176,7 +176,7 @@ along with the variables under its "Production only" heading.
 
 | Kind | Examples | You set it? |
 | --- | --- | --- |
-| Environment facts | `DOMAIN`, registry credentials, `DB_HOST` | Yes — before you start |
+| Environment facts | `DOMAIN`, `TENANT`, registry credentials, `DB_HOST` | Yes — before you start |
 | Tunables with defaults | `PSA_LEVEL`, `SSP_DEPLOYMENT_SIZE`, `ES_STORAGE`, feature flags | Only to change behavior |
 | Discovered | `ELASTIC_PASSWORD`, `GATEWAY_NAME`, `GATEWAY_NAMESPACE`, `GRAFANA_SERVICE` | No — a script writes it back |
 
@@ -541,7 +541,7 @@ the OIDC discovery endpoint:
 
 ```bash
 curl --insecure \
-  https://"${SSP_FQDN}"/default/.well-known/openid-configuration?sspinfo=true
+  https://"${SSP_FQDN}"/"${TENANT}"/.well-known/openid-configuration?sspinfo=true
 ```
 
 *Success:* all pods READY (e.g. `1/1`) and Running with jobs Completed, and the
@@ -590,9 +590,27 @@ Deployment seeds four bootstrap credentials, **valid 48 hours**. The script
 decodes the tenant admin login ID and password from
 `${RELEASENAME}-ssp-secret-defaulttenantadminuser`.
 
-> **48-hour window:** log in at `https://$SSP_FQDN` and create a durable admin
-> identity within 48 hours; otherwise run the break-glass recovery. See
-> *Configuring Administrative Access*.
+**The UIs are tenant-scoped.** The console is at:
+
+```
+https://<host>/$TENANT/ui/v1/adminconsole/          # e.g. /default/ui/v1/adminconsole/
+https://<host>/$TENANT/ui/v1/selfserviceconsole/
+```
+
+The guide says only "sign in at `https://$SSP_FQDN`", which 404s with a Spring
+Boot Whitelabel page — there is no tenant-less `/` or `/login`. The script reads
+the hostnames from the platform HTTPRoutes and prints the full URLs; the `ssp`
+chart provisions both a runtime and a `mgmt-` router, so try `mgmt-` first.
+
+> **Do not open `/$TENANT/ui/v1/signin/` directly.** It is the redirect target of
+> an authorization request. Visited directly it renders the sign-in UI but fails
+> with *"Application with the given id does not exist"*, because there is no
+> `client_id` to resolve. Enter through the console path, which starts the OIDC
+> flow itself.
+
+> **48-hour window:** log in and create a durable admin identity within 48
+> hours; otherwise run the break-glass recovery. See *Configuring
+> Administrative Access*.
 
 *Troubleshooting:* secret not found → confirm the `$RELEASENAME` prefix and
 namespace in the secret name. Login rejected → the 48-hour bootstrap window may

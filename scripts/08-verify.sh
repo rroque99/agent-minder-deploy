@@ -3,7 +3,7 @@
 source "$(dirname "$0")/lib/common.sh"
 load_env
 require_cmd kubectl curl
-require_env NAMESPACE SSP_FQDN
+require_env NAMESPACE SSP_FQDN TENANT
 
 step "Workloads"
 kubectl get pods -n "${NAMESPACE}"
@@ -26,7 +26,8 @@ kubectl get events -n "${NAMESPACE}" --sort-by=.lastTimestamp | tail -20
 
 step "OIDC discovery on https://${SSP_FQDN}"
 # --insecure because demo mode uses a self-signed certificate.
-url="https://${SSP_FQDN}/default/.well-known/openid-configuration?sspinfo=true"
+# Discovery is tenant-scoped - there is no endpoint at the bare root.
+url="https://${SSP_FQDN}/${TENANT}/.well-known/openid-configuration?sspinfo=true"
 info "GET ${url}"
 if body="$(curl --insecure --show-error --silent --max-time 30 "$url")"; then
   if printf '%s' "$body" | grep -q '"issuer"'; then
